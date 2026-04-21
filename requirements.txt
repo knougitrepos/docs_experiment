@@ -1,0 +1,40 @@
+# ============================================================
+# 참조 문서 구조 비교 실험 - requirements
+# Windows num_workers>0 이슈 회피 (user rule 11)
+# ============================================================
+
+# --- 실험 대상(Target) 프로젝트 스택 ---------------------------
+# Greenfield 파일럿: FastAPI TODO API
+fastapi>=0.110,<1.0
+uvicorn[standard]>=0.27,<1.0
+pydantic>=2.6,<3.0
+sqlalchemy>=2.0,<3.0
+python-jose[cryptography]>=3.3,<4.0
+passlib[bcrypt]>=1.7,<2.0
+python-multipart>=0.0.9
+
+# --- 테스트/품질 게이트 --------------------------------------
+pytest>=8.0,<9.0
+pytest-cov>=4.1,<5.0
+pytest-json-report>=1.5,<2.0
+httpx>=0.27,<1.0
+
+# --- 정적 분석 ----------------------------------------------
+ruff>=0.4,<1.0
+mypy>=1.10,<2.0
+types-passlib
+types-python-jose
+
+# --- 실험 러너/평가기 ---------------------------------------
+pyyaml>=6.0,<7.0
+pandas>=2.2,<3.0
+tabulate>=0.9,<1.0
+rich>=13.7,<14.0
+
+# --- 선택: Phase 2 (Brownfield / SWE-bench) -----------------
+# datasets>=2.18   # HuggingFace (SWE-bench 로드)
+# docker>=7.0      # swebench harness
+# swebench>=3.0    # SWE-bench Lite 평가
+
+# --- 선택: 별도 CLI 에이전트 (구독 내에서 수동/반자동 실행) ---
+# aider-chat>=0.70   # 비교용 (선택)

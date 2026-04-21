@@ -1,0 +1,50 @@
+task_id: task-3-pagination
+items:
+  - id: fr_params
+    text: "/api/v1/todos 가 page, size, q, completed 쿼리 파라미터 지원"
+    weight: 0.12
+    automated: true
+  - id: fr_response_shape
+    text: "응답이 { items, total, page, size } 스키마"
+    weight: 0.12
+    automated: true
+  - id: fr_size_cap
+    text: "size>100 은 422"
+    weight: 0.08
+    automated: true
+  - id: fr_page_min
+    text: "page<1 또는 size<1 은 422"
+    weight: 0.05
+    automated: true
+  - id: fr_q_filter
+    text: "?q=foo 는 title 또는 description 에 foo 포함 항목만 (대소문자 무시)"
+    weight: 0.10
+    automated: true
+  - id: fr_completed_filter
+    text: "?completed=true 필터 동작"
+    weight: 0.08
+    automated: true
+  - id: fr_ownership
+    text: "결과가 현재 사용자 소유 TODO 만 포함"
+    weight: 0.10
+    automated: true
+  - id: fr_sort
+    text: "기본 정렬 updated_at DESC"
+    weight: 0.05
+    automated: true
+  - id: nfr_pytest_pass
+    text: "pytest 통과 + coverage >= 70%"
+    weight: 0.12
+    automated: true
+  - id: nfr_ruff_mypy
+    text: "ruff 에러 0, mypy 에러 <= 3"
+    weight: 0.08
+    automated: true
+  - id: qual_page_object
+    text: "공용 Page[T] 제네릭 또는 재사용 가능한 페이지 스키마로 분리"
+    weight: 0.05
+    automated: false
+  - id: qual_docstring
+    text: "엔드포인트에 한글 설명(description/docstring) 작성"
+    weight: 0.05
+    automated: false

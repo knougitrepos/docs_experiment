@@ -1,0 +1,61 @@
+# Acceptance checklist for task-1
+# 각 항목은 LLM judge 또는 자동 스크립트로 0/1 채점된다.
+# weight 의 총합은 1.0 이 되도록 둔다.
+task_id: task-1-todo-crud
+items:
+  - id: fr_crud_post
+    text: "POST /api/v1/todos 가 존재하며 TodoRead 스키마를 201로 반환한다"
+    weight: 0.10
+    automated: true       # 통합 테스트로 확인
+  - id: fr_crud_get_one
+    text: "GET /api/v1/todos/{id} 가 200 또는 404(with code=TODO_NOT_FOUND) 반환"
+    weight: 0.10
+    automated: true
+  - id: fr_crud_list
+    text: "GET /api/v1/todos 가 TODO 리스트(배열 또는 items 필드)를 반환"
+    weight: 0.08
+    automated: true
+  - id: fr_crud_put
+    text: "PUT /api/v1/todos/{id} 가 기존 항목 갱신"
+    weight: 0.10
+    automated: true
+  - id: fr_crud_delete
+    text: "DELETE /api/v1/todos/{id} 가 204 를 반환"
+    weight: 0.08
+    automated: true
+  - id: fr_health
+    text: "GET /health 가 200 { status: ok } 반환"
+    weight: 0.05
+    automated: true
+  - id: nfr_pytest_pass
+    text: "pytest 가 실패 없이 통과"
+    weight: 0.12
+    automated: true
+  - id: nfr_coverage_70
+    text: "pytest coverage >= 70%"
+    weight: 0.10
+    automated: true
+  - id: nfr_ruff_clean
+    text: "ruff check 에러 0"
+    weight: 0.07
+    automated: true
+  - id: nfr_mypy_low
+    text: "mypy 에러 <= 3"
+    weight: 0.05
+    automated: true
+  - id: qual_layering
+    text: "app/ 디렉터리가 레이어 구조(router/service/repo/model/schema)를 준수"
+    weight: 0.05
+    automated: false      # judge 필요
+  - id: qual_error_format
+    text: "404 응답이 { detail, code=TODO_NOT_FOUND } 형식"
+    weight: 0.05
+    automated: true
+  - id: qual_logging
+    text: "print 디버깅 없이 logging 모듈 사용"
+    weight: 0.03
+    automated: false
+  - id: qual_timestamps
+    text: "created_at / updated_at 이 ISO8601 로 응답에 포함"
+    weight: 0.02
+    automated: true

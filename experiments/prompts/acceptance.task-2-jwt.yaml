@@ -1,0 +1,54 @@
+task_id: task-2-jwt
+items:
+  - id: fr_register
+    text: "POST /api/v1/auth/register 동작, 중복 시 409 + USERNAME_TAKEN"
+    weight: 0.10
+    automated: true
+  - id: fr_login
+    text: "POST /api/v1/auth/login 성공 시 access_token 반환, 실패 시 401 + INVALID_CREDENTIALS"
+    weight: 0.10
+    automated: true
+  - id: fr_me
+    text: "GET /api/v1/auth/me 가 현재 사용자 반환"
+    weight: 0.08
+    automated: true
+  - id: fr_users_me
+    text: "GET /api/v1/users/me 가 auth/me 와 동일 동작"
+    weight: 0.05
+    automated: true
+  - id: fr_todos_protected
+    text: "/todos/* 전부 JWT 보호 (인증 없으면 401 + INVALID_TOKEN)"
+    weight: 0.12
+    automated: true
+  - id: fr_ownership
+    text: "다른 유저의 TODO ID 접근 시 404 반환 (정보 은닉)"
+    weight: 0.10
+    automated: true
+  - id: nfr_bcrypt
+    text: "비밀번호가 bcrypt 로 해시되어 저장 (passlib)"
+    weight: 0.08
+    automated: false
+  - id: nfr_hidden_hash
+    text: "가입/조회 응답에 hashed_password 필드 없음"
+    weight: 0.07
+    automated: true
+  - id: nfr_jwt_hs256
+    text: "JWT 알고리즘 HS256, JWT_SECRET env 사용"
+    weight: 0.05
+    automated: false
+  - id: nfr_pytest_pass
+    text: "pytest 통과 + coverage >= 70%"
+    weight: 0.10
+    automated: true
+  - id: nfr_ruff_mypy
+    text: "ruff 에러 0, mypy 에러 <= 3"
+    weight: 0.08
+    automated: true
+  - id: qual_error_codes
+    text: "에러 응답에 code 필드 일관 적용"
+    weight: 0.05
+    automated: true
+  - id: qual_schema_coherence
+    text: "Pydantic UserRead / UserCreate 분리되어 비밀번호가 UserRead 에 노출되지 않음"
+    weight: 0.02
+    automated: false

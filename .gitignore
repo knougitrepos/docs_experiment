@@ -1,0 +1,59 @@
+# ============================================================
+# Python
+# ============================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ============================================================
+# Virtual envs
+# ============================================================
+.venv/
+venv/
+env/
+
+# ============================================================
+# IDE / OS
+# ============================================================
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+
+# ============================================================
+# 실험 산출물 (커밋 정책: summary.csv만 커밋, raw는 제외)
+# ============================================================
+experiments/ws/**
+experiments/results/**/stream.jsonl
+experiments/results/**/*.log
+experiments/results/**/raw/
+!experiments/ws/.gitkeep
+!experiments/results/.gitkeep
+!experiments/results/**/summary.csv
+!experiments/results/**/report.md
+!experiments/results/**/metrics.json
+
+# ============================================================
+# Cursor hook state (C4 조건에서 생성)
+# ============================================================
+.cursor/hooks/state/
+
+# ============================================================
+# 환경 변수 / 시크릿
+# ============================================================
+.env
+.env.*
+*.key
+*.pem
