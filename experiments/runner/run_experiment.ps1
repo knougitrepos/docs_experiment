@@ -1,17 +1,17 @@
-<#
+﻿<#
 .SYNOPSIS
-    문서 참조 구조 비교 실험 — 단일 (agent, model) 기준 오케스트레이터.
+    문서 참조 구조 비교 실험 — 단일 (agent, model, reasoning) 기준 오케스트레이터.
 
 .DESCRIPTION
-    한 번의 실행은 **하나의 에이전트(CLI) × 하나의 모델** 만 사용합니다.
+    한 번의 실행은 **하나의 에이전트(CLI) × 하나의 모델 × 하나의 reasoning 수준** 만 사용합니다.
     여러 모델을 같이 돌리면 토큰 비용/환경 통제가 어렵기 때문에,
     Cursor / Codex / Aider / Copilot / custom / manual 중 하나를 골라 End-to-End 로 수행합니다.
 
     실행 매트릭스(이번 호출 내):
-        Conditions × Repeats × Tasks  (Agent, Model 은 고정)
+        Conditions × Repeats × Tasks  (Agent, Model, ReasoningEffort 는 고정)
 
     산출물:
-        experiments/results/<ts>/<agent>/<model>/<cond>/rep<N>/<task>/
+        experiments/results/<ts>/<agent>/<model>[/reasoning-<effort>]/<cond>/rep<N>/<task>/
           ├─ prompt.txt               runner 가 생성한 프롬프트 사본
           ├─ stream.jsonl             어댑터의 원시 stdout (JSONL 또는 텍스트)
           ├─ agent.meta.json          어댑터 meta
@@ -23,10 +23,17 @@
           └─ metrics.json             evaluate.py 결과
 
 .PARAMETER Agent
-    어댑터 이름. cursor | codex | aider | copilot | custom | manual
+    어댑터 이름. cursor | codex | aider | copilot | antigravity | custom | manual
 
 .PARAMETER Model
     에이전트별 모델 이름. (예: sonnet / gpt-5 / openai/gpt-4o / anthropic/claude-3-7-sonnet-...)
+
+.PARAMETER ReasoningEffort
+    모델별 reasoning/이성 수준. default 이면 agent 기본값을 사용하고 CLI 옵션을 전달하지 않음.
+    default | minimal | low | medium | high | xhigh
+
+.PARAMETER ReasoningFlag
+    Codex CLI 에 reasoning 수준을 전달할 때 사용할 flag. 기본 --reasoning-effort.
 
 .PARAMETER Conditions
     실행할 조건 목록(콤마 구분). 기본 "C0,C1,C2,C3,C4"
@@ -83,16 +90,22 @@
 
 .NOTES
     - Windows num_workers>0 이슈 회피(user rule 11): pytest 는 -p no:xdist.
-    - 한 번에 한 (agent, model) 만 실행하여 토큰/환경 통제.
+    - 한 번에 한 (agent, model, reasoning) 만 실행하여 토큰/환경 통제.
     - 같은 RunId 로 여러 번 호출하면 같은 run-root 아래 (agent,model) 별로 누적.
 #>
 
 [CmdletBinding()]
 param(
-    [Parameter(Mandatory)][ValidateSet('cursor','codex','aider','copilot','custom','manual')]
+    [Parameter(Mandatory)][ValidateSet('cursor','codex','aider','copilot','antigravity','custom','manual')]
     [string]$Agent,
 
     [Parameter(Mandatory)][string]$Model,
+
+    [ValidateSet('default','minimal','low','medium','high','xhigh')]
+    [string]$ReasoningEffort = 'default',
+
+    [ValidatePattern('^--[A-Za-z0-9-]+$')]
+    [string]$ReasoningFlag = '--reasoning-effort',
 
     [string]$Conditions = 'C0,C1,C2,C3,C4',
     [int]$Repeats       = 3,
@@ -103,6 +116,7 @@ param(
     [switch]$SkipAgent,
     [switch]$NoEvaluate,
     [string]$CustomCmd,
+    [string]$AgentExtraArgs,
     [int]$AdapterTimeoutSec = 1800,
     [string]$RunId,
     [switch]$Help
@@ -137,14 +151,23 @@ if ($Agent -eq 'custom' -and -not $CustomCmd) {
     throw "-Agent custom requires -CustomCmd '<template>' (e.g. 'my-cli --model `${MODEL} --prompt-file `${PROMPT_FILE}')"
 }
 
+if ($ReasoningEffort -ne 'default' -and $Agent -ne 'codex') {
+    throw "-ReasoningEffort is currently implemented only for -Agent codex. Use -ReasoningEffort default or add adapter-specific support first."
+}
+
 if (-not $RunId) { $RunId = Get-Date -Format 'yyyyMMdd_HHmmss' }
+$safeModel = ($Model -replace '[\\\/:*?"<>|]', '_')
+$safeReasoning = ($ReasoningEffort -replace '[\\\/:*?"<>|]', '_')
 $runRoot   = Join-Path $OutputRoot $RunId
-$agentRoot = Join-Path $runRoot ("{0}\{1}" -f $Agent, ($Model -replace '[\\\/:*?"<>|]', '_'))
+$agentRoot = Join-Path $runRoot ("{0}\{1}" -f $Agent, $safeModel)
+if ($ReasoningEffort -ne 'default') {
+    $agentRoot = Join-Path $agentRoot ("reasoning-{0}" -f $safeReasoning)
+}
 New-Item -ItemType Directory -Force -Path $agentRoot | Out-Null
 
 if (-not $QuotaStopFile) { $QuotaStopFile = Join-Path $runRoot '.stop' }
 $runsCsv = Join-Path $agentRoot 'runs.csv'
-'run_index,agent,model,task,cond,rep,started_at,finished_at,adapter_exit,pytest_exit,ruff_exit,mypy_exit,wall_sec,ws_path' `
+'run_index,agent,model,reasoning_effort,task,cond,rep,started_at,finished_at,adapter_exit,pytest_exit,ruff_exit,mypy_exit,wall_sec,ws_path' `
     | Set-Content -Path $runsCsv -Encoding UTF8
 
 $matrixCount = $condList.Count * $Repeats * $taskList.Count
@@ -152,6 +175,8 @@ Write-Log "===== run_experiment.ps1 ====="
 Write-Log "runId          : $RunId"
 Write-Log "agent          : $Agent"
 Write-Log "model          : $Model"
+Write-Log "reasoning      : $ReasoningEffort"
+Write-Log "reasoningFlag  : $ReasoningFlag"
 Write-Log "conditions     : $($condList -join ', ')"
 Write-Log "repeats        : $Repeats"
 Write-Log "tasks          : $($taskList -join ', ')"
@@ -169,6 +194,15 @@ $repoRoot = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $wsRoot   = Join-Path $repoRoot 'experiments\ws'
 New-Item -ItemType Directory -Force -Path $wsRoot | Out-Null
 
+$pythonExe = Join-Path $repoRoot '.venv\Scripts\python.exe'
+if (-not (Test-Path $pythonExe)) {
+    $pythonCmd = Get-Command 'python' -ErrorAction SilentlyContinue
+    if (-not $pythonCmd) {
+        throw "Python not found. Expected venv python at $pythonExe"
+    }
+    $pythonExe = $pythonCmd.Source
+}
+
 # ------------------------------------------------------------
 # 3) 헬퍼
 # ------------------------------------------------------------
@@ -180,35 +214,53 @@ function Invoke-QualityGates {
     Write-Log "pytest"
     Push-Location $Ws
     try {
-        & pytest --cov=app --cov-report=term `
-            --json-report --json-report-file=(Join-Path $RunDir 'pytest.json') `
-            -p no:xdist 2>&1 | Tee-Object (Join-Path $RunDir 'pytest.log') | Out-Null
+        $oldEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        $pytestJson = Join-Path $RunDir 'pytest.json'
+        $pytestLog = Join-Path $RunDir 'pytest.log'
+        & $pythonExe -m pytest --cov=app --cov-report=term `
+            --json-report "--json-report-file=$pytestJson" `
+            -p no:xdist *> $pytestLog
         $ptExit = $LASTEXITCODE
     } catch {
         Write-Log "pytest failed: $_" -Level WARN
         $ptExit = -1
-    } finally { Pop-Location }
+    } finally {
+        if ($oldEap) { $ErrorActionPreference = $oldEap }
+        Pop-Location
+    }
 
     Write-Log "ruff"
     Push-Location $Ws
     try {
-        & ruff check . --output-format=json 2>&1 `
-            | Set-Content -Path (Join-Path $RunDir 'ruff.json') -Encoding UTF8
+        $oldEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        $ruffJson = Join-Path $RunDir 'ruff.json'
+        $ruffErr = Join-Path $RunDir 'ruff.err'
+        & $pythonExe -m ruff check . --output-format=json 1> $ruffJson 2> $ruffErr
         $ruExit = $LASTEXITCODE
     } catch {
         Write-Log "ruff failed: $_" -Level WARN
         $ruExit = -1
-    } finally { Pop-Location }
+    } finally {
+        if ($oldEap) { $ErrorActionPreference = $oldEap }
+        Pop-Location
+    }
 
     Write-Log "mypy"
     Push-Location $Ws
     try {
-        & mypy app 2>&1 | Tee-Object (Join-Path $RunDir 'mypy.txt') | Out-Null
+        $oldEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        & $pythonExe -m mypy app *> (Join-Path $RunDir 'mypy.txt')
         $myExit = $LASTEXITCODE
     } catch {
         Write-Log "mypy failed: $_" -Level WARN
         $myExit = -1
-    } finally { Pop-Location }
+    } finally {
+        if ($oldEap) { $ErrorActionPreference = $oldEap }
+        Pop-Location
+    }
 
     return [pscustomobject]@{
         pytest_exit = $ptExit
@@ -267,6 +319,11 @@ function Invoke-OneRun {
     } else {
         Write-Log "[run $Index] adapter=$Agent model=$Model cond=$Condition rep=$Rep task=$TaskId"
         $extra = @{}
+        if ($ReasoningEffort -ne 'default') {
+            $extra.ReasoningEffort = $ReasoningEffort
+            $extra.ReasoningFlag = $ReasoningFlag
+        }
+        if ($AgentExtraArgs) { $extra.ExtraArgs = $AgentExtraArgs }
         if ($Agent -eq 'custom') { $extra.Cmd = $CustomCmd }
         if ($Agent -eq 'copilot' -and $CustomCmd) { $extra.Mode = 'custom'; $extra.Cmd = $CustomCmd }
 
@@ -303,6 +360,7 @@ function Invoke-OneRun {
         run_id        = $RunId
         agent         = $Agent
         model         = $Model
+        reasoning_effort = $ReasoningEffort
         task_id       = $TaskId
         condition     = $Condition
         rep           = $Rep
@@ -320,21 +378,28 @@ function Invoke-OneRun {
     $runMeta | ConvertTo-Json -Depth 5 | Set-Content -Path (Join-Path $runDir 'run.meta.json') -Encoding UTF8
 
     # 3.6 runs.csv
-    $line = "$Index,$Agent,$Model,$TaskId,$Condition,$Rep,$($started.ToString('o')),$($finished.ToString('o')),$adapterExit,$($gate.pytest_exit),$($gate.ruff_exit),$($gate.mypy_exit),$($runMeta.wall_seconds),$WsPath"
+    $line = "$Index,$Agent,$Model,$ReasoningEffort,$TaskId,$Condition,$Rep,$($started.ToString('o')),$($finished.ToString('o')),$adapterExit,$($gate.pytest_exit),$($gate.ruff_exit),$($gate.mypy_exit),$($runMeta.wall_seconds),$WsPath"
     Add-Content -Path $runsCsv -Value $line -Encoding UTF8
 
     # 3.7 evaluate
     if (-not $NoEvaluate -and -not $DryRun) {
         Write-Log "[run $Index] evaluate.py"
-        & python (Join-Path $PSScriptRoot 'evaluate.py') `
-            --run-dir $runDir `
-            --ws $WsPath `
-            --task $TaskId `
-            --cond $Condition `
-            --model $Model `
-            --agent $Agent `
-            --rep $Rep `
-            --repo-root $repoRoot 2>&1 | Tee-Object (Join-Path $runDir 'evaluate.log') | Out-Null
+        $oldEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            & $pythonExe (Join-Path $PSScriptRoot 'evaluate.py') `
+                --run-dir $runDir `
+                --ws $WsPath `
+                --task $TaskId `
+                --cond $Condition `
+                --model $Model `
+                --reasoning-effort $ReasoningEffort `
+                --agent $Agent `
+                --rep $Rep `
+                --repo-root $repoRoot *> (Join-Path $runDir 'evaluate.log')
+        } finally {
+            $ErrorActionPreference = $oldEap
+        }
     }
 }
 
@@ -349,7 +414,11 @@ foreach ($cond in $condList) {
             break
         }
 
-        $wsName = ("{0}-{1}-{2}-rep{3}" -f $Agent, ($Model -replace '[\\\/:*?"<>|]', '_'), $cond, $rep)
+        if ($ReasoningEffort -eq 'default') {
+            $wsName = ("{0}-{1}-{2}-rep{3}" -f $Agent, $safeModel, $cond, $rep)
+        } else {
+            $wsName = ("{0}-{1}-reasoning-{2}-{3}-rep{4}" -f $Agent, $safeModel, $safeReasoning, $cond, $rep)
+        }
         $wsPath = Join-Path $wsRoot $wsName
         Write-Log "===== sequence start: $wsName ====="
 
@@ -372,10 +441,17 @@ foreach ($cond in $condList) {
 # ------------------------------------------------------------
 if (-not $NoEvaluate -and -not $DryRun) {
     Write-Log "===== aggregate (scope=agent/model) ====="
-    & python (Join-Path $PSScriptRoot 'aggregate.py') `
-        --run-root $runRoot `
-        --scope "$Agent/$(($Model -replace '[\\\/:*?"<>|]', '_'))" 2>&1 `
-        | Tee-Object (Join-Path $agentRoot 'aggregate.log')
+    $scope = "$Agent/$safeModel"
+    if ($ReasoningEffort -ne 'default') { $scope = "$scope/reasoning-$safeReasoning" }
+    $oldEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $pythonExe (Join-Path $PSScriptRoot 'aggregate.py') `
+            --run-root $runRoot `
+            --scope $scope *> (Join-Path $agentRoot 'aggregate.log')
+    } finally {
+        $ErrorActionPreference = $oldEap
+    }
 }
 
 Write-Log "done. results at: $agentRoot"
@@ -388,4 +464,5 @@ if (-not $DryRun -and -not $NoEvaluate) {
     Write-Host "  report.md      : $(Join-Path $agentRoot 'report.md')"
 }
 Write-Host ""
-Write-Host "다른 (agent,model) 을 같은 run 으로 묶으려면 -RunId $RunId 로 다시 호출하세요."
+Write-Host "To group another (agent,model,reasoning) under the same run, call again with -RunId $RunId."
+

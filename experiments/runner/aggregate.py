@@ -33,7 +33,7 @@ logger = get_logger(__name__)
 # 1) metrics.json 수집
 # ------------------------------------------------------------
 METRIC_FIELDS = [
-    "agent", "task_id", "condition", "model", "rep",
+    "agent", "task_id", "condition", "model", "reasoning_effort", "rep",
     "requirements_fulfillment",
     "test_pass_rate",
     "build_success",
@@ -69,12 +69,14 @@ def _scan_metrics(run_root: Path, scope: str | None) -> list[dict[str, Any]]:
 
     for p in base.rglob("metrics.json"):
         try:
-            data = json.loads(p.read_text(encoding="utf-8"))
+            data = json.loads(p.read_text(encoding="utf-8-sig"))
         except Exception as exc:  # noqa: BLE001
             logger.warning("skip unreadable %s: %s", p, exc)
             continue
         # 필드 flatten
         row = {k: data.get(k) for k in METRIC_FIELDS}
+        if not row.get("reasoning_effort"):
+            row["reasoning_effort"] = "default"
         # static_errors breakdown 추가
         brk = data.get("static_errors_breakdown") or {}
         row["ruff_errors"] = brk.get("ruff", 0)
@@ -88,7 +90,7 @@ def _scan_metrics(run_root: Path, scope: str | None) -> list[dict[str, Any]]:
 # ------------------------------------------------------------
 # 2) summary.csv / report.md 작성
 # ------------------------------------------------------------
-_GROUP_KEYS = ["agent", "model", "condition", "task_id"]
+_GROUP_KEYS = ["agent", "model", "reasoning_effort", "condition", "task_id"]
 _NUMERIC = [
     "requirements_fulfillment",
     "test_pass_rate",
@@ -158,10 +160,12 @@ def _render_report(run_root: Path, df: pd.DataFrame, out: Path, scope: str | Non
     # 2.1 agent / model 리스트
     agents = sorted(df["agent"].dropna().unique().tolist())
     models = sorted(df["model"].dropna().unique().tolist())
+    reasonings = sorted(df["reasoning_effort"].dropna().unique().tolist()) if "reasoning_effort" in df.columns else []
     conds  = sorted(df["condition"].dropna().unique().tolist())
     tasks  = sorted(df["task_id"].dropna().unique().tolist())
     lines.append(f"- agents   : {', '.join(agents) or '-'}")
     lines.append(f"- models   : {', '.join(models) or '-'}")
+    lines.append(f"- reasoning: {', '.join(reasonings) or '-'}")
     lines.append(f"- conditions: {', '.join(conds) or '-'}")
     lines.append(f"- tasks    : {', '.join(tasks) or '-'}")
     lines.append("")
@@ -169,7 +173,7 @@ def _render_report(run_root: Path, df: pd.DataFrame, out: Path, scope: str | Non
     # 2.2 조건별 평균 (agent/model 고정 관점)
     lines.append("## 1. 조건(Cx) × task 평균 — 핵심 지표")
     lines.append("")
-    key_cols = ["agent", "model", "condition", "task_id"]
+    key_cols = ["agent", "model", "reasoning_effort", "condition", "task_id"]
     value_cols = [
         "requirements_fulfillment",
         "test_pass_rate",
@@ -190,11 +194,11 @@ def _render_report(run_root: Path, df: pd.DataFrame, out: Path, scope: str | Non
         lines.append("")
 
     # 2.3 조건 heatmap (mean of requirements_fulfillment)
-    lines.append("## 2. 요구사항 충족률 히트맵 (agent/model × condition, task 평균)")
+    lines.append("## 2. 요구사항 충족률 히트맵 (agent/model/reasoning × condition, task 평균)")
     lines.append("")
     if {"requirements_fulfillment"}.issubset(df.columns):
         heat = (
-            df.groupby(["agent", "model", "condition"])["requirements_fulfillment"]
+            df.groupby(["agent", "model", "reasoning_effort", "condition"])["requirements_fulfillment"]
             .mean()
             .unstack("condition")
             .round(3)
@@ -242,7 +246,7 @@ def _render_report(run_root: Path, df: pd.DataFrame, out: Path, scope: str | Non
     ops_cols = [c for c in ["wall_seconds", "total_tokens", "total_cost_usd", "input_docs_bytes"]
                 if c in df.columns]
     if ops_cols:
-        v = df.groupby(["agent", "model"])[ops_cols].sum().round(3).reset_index()
+        v = df.groupby(["agent", "model", "reasoning_effort"])[ops_cols].sum().round(3).reset_index()
         v["hours"] = (v["wall_seconds"] / 3600).round(2) if "wall_seconds" in v.columns else 0
         lines.append(_df_to_md(v))
         lines.append("")

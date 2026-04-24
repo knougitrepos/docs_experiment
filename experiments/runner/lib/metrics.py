@@ -42,6 +42,7 @@ class MetricResult:
     task_id: str = ""
     condition: str = ""
     model: str = ""
+    reasoning_effort: str = "default"
     rep: int = 0
 
     # --- 8 지표 ---
@@ -342,19 +343,21 @@ def evaluate_run(
     rep: int,
     repo_root: Path,
     agent: str = "cursor",
+    reasoning_effort: str = "default",
     use_judge: bool = True,
     judge_model: str = "sonnet",
 ) -> MetricResult:
     """단일 run 을 평가해 MetricResult 를 반환하고 metrics.json 으로 저장."""
     res = MetricResult(
-        agent=agent, task_id=task_id, condition=condition, model=model, rep=rep,
+        agent=agent, task_id=task_id, condition=condition,
+        model=model, reasoning_effort=reasoning_effort, rep=rep,
     )
 
     # 0) meta 에서 wall_sec
     meta_path = run_dir / "run.meta.json"
     if meta_path.exists():
         try:
-            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta = json.loads(meta_path.read_text(encoding="utf-8-sig"))
             res.wall_seconds = float(meta.get("wall_seconds") or 0.0)
         except Exception as exc:  # noqa: BLE001
             res.errors.append(f"meta read: {exc}")

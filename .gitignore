@@ -39,6 +39,14 @@ experiments/ws/**
 experiments/results/**/stream.jsonl
 experiments/results/**/*.log
 experiments/results/**/raw/
+experiments/results/**/runs.csv
+experiments/results/**/prompt.txt
+experiments/results/**/agent.meta.json
+experiments/results/**/run.meta.json
+experiments/results/**/pytest.json
+experiments/results/**/ruff.json
+experiments/results/**/mypy.txt
+experiments/results/**/judge.json
 !experiments/ws/.gitkeep
 !experiments/results/.gitkeep
 !experiments/results/**/summary.csv

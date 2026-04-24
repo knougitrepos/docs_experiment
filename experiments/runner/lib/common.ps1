@@ -26,23 +26,22 @@ function Write-Log {
 function Initialize-Workspace {
     <#
     .SYNOPSIS
-        워크스페이스 디렉터리를 비우고 초기화한다(이미 존재하면 docs/ 하위만 제거).
-    .PARAMETER Workspace
-        대상 경로 (예: experiments/ws/task-1-C0-sonnet-1)
+        Reset a generated experiment workspace before a non-KeepState run.
     #>
     param([Parameter(Mandatory)][string]$Workspace)
 
-    if (-not (Test-Path $Workspace)) {
-        New-Item -ItemType Directory -Force -Path $Workspace | Out-Null
-    }
-
-    # 이전 실행 잔여 문서 제거 (조건별로 오염되지 않도록)
-    foreach ($name in @('docs', 'AGENTS.md', 'REQUIREMENTS.md')) {
-        $p = Join-Path $Workspace $name
-        if (Test-Path $p) {
-            Remove-Item -Recurse -Force $p
-            Write-Log "removed stale: $p" -Level DEBUG
+    if (Test-Path $Workspace) {
+        $resolved = (Resolve-Path $Workspace).Path
+        $parent = Split-Path -Parent $resolved
+        $parentName = Split-Path -Leaf $parent
+        $grandParentName = Split-Path -Leaf (Split-Path -Parent $parent)
+        if ($parentName -ne 'ws' -or $grandParentName -ne 'experiments') {
+            throw "Refusing to clean unexpected workspace path: $resolved"
         }
+        Get-ChildItem -LiteralPath $resolved -Force | Remove-Item -Recurse -Force
+        Write-Log "cleaned workspace: $resolved" -Level DEBUG
+    } else {
+        New-Item -ItemType Directory -Force -Path $Workspace | Out-Null
     }
 }
 
@@ -57,10 +56,12 @@ function Copy-Requirements {
         [Parameter(Mandatory)][string]$TaskId,
         [Parameter(Mandatory)][string]$Workspace
     )
-    $src = Join-Path $DocsRoot "요구사항\$TaskId.md"
-    if (-not (Test-Path $src)) {
+    $matches = @(Get-ChildItem -LiteralPath $DocsRoot -Recurse -File -Filter "$TaskId.md")
+    if ($matches.Count -eq 0) {
+        $src = Join-Path $DocsRoot "<requirements>\$TaskId.md"
         throw "requirements not found: $src"
     }
+    $src = $matches[0].FullName
     $dst = Join-Path $Workspace 'REQUIREMENTS.md'
     Copy-Item $src $dst -Force
     Write-Log "placed REQUIREMENTS.md ($src -> $dst)"
@@ -139,7 +140,7 @@ function Write-ConditionManifest {
         [Parameter(Mandatory)][string]$Workspace,
         [Parameter(Mandatory)][string]$Condition,
         [Parameter(Mandatory)][string]$TaskId,
-        [Parameter(Mandatory)][string[]]$PlacedFiles
+        [Parameter(Mandatory)][AllowEmptyCollection()][string[]]$PlacedFiles
     )
     $manifest = [pscustomobject]@{
         condition   = $Condition

@@ -5,7 +5,7 @@ lib.metrics.evaluate_run 을 실행하고 metrics.json 을 생성한다.
 
 Usage:
     python evaluate.py --run-dir <path> --ws <path> --task <id> --cond C0 \
-                       --model sonnet --agent cursor --rep 1 \
+                       --model sonnet --reasoning-effort medium --agent cursor --rep 1 \
                        --repo-root <repo>
 """
 
@@ -43,6 +43,8 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--cond", required=True, choices=["C0", "C1", "C2", "C3", "C4"],
                     help="condition")
     ap.add_argument("--model", required=True, help="model name (adapter-specific)")
+    ap.add_argument("--reasoning-effort", default="default",
+                    help="reasoning/이성 수준 (default/minimal/low/medium/high/xhigh)")
     ap.add_argument("--agent", default="cursor",
                     choices=["cursor", "codex", "aider", "copilot", "custom", "manual"],
                     help="agent adapter that produced the run")
@@ -59,8 +61,9 @@ def _parse_args() -> argparse.Namespace:
 def main() -> int:
     args = _parse_args()
     logger.info(
-        "evaluate start: run=%s agent=%s model=%s cond=%s rep=%d task=%s",
-        args.run_dir, args.agent, args.model, args.cond, args.rep, args.task,
+        "evaluate start: run=%s agent=%s model=%s reasoning=%s cond=%s rep=%d task=%s",
+        args.run_dir, args.agent, args.model, args.reasoning_effort,
+        args.cond, args.rep, args.task,
     )
 
     if not args.run_dir.exists():
@@ -77,6 +80,7 @@ def main() -> int:
             task_id=args.task,
             condition=args.cond,
             model=args.model,
+            reasoning_effort=args.reasoning_effort,
             rep=args.rep,
             repo_root=args.repo_root,
             agent=args.agent,
@@ -91,6 +95,7 @@ def main() -> int:
             "task_id": args.task,
             "condition": args.cond,
             "model": args.model,
+            "reasoning_effort": args.reasoning_effort,
             "rep": args.rep,
             "requirements_fulfillment": 0.0,
             "test_pass_rate": 0.0,
