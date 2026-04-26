@@ -89,7 +89,7 @@ def parse_stream(stream_path: Path) -> StreamStats:
                 stats.retry_events += 1
 
             # error
-            if etype == "error" or "error" in evt:
+            if etype == "error" or (evt.get("error") not in (None, "", False, 0)):
                 stats.error_events += 1
 
             # usage

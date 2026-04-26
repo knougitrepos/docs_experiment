@@ -263,6 +263,8 @@ def _automated_check_from_results(
         return int("GET /api/v1/users/me" in routes_found)
     if cid == "fr_todos_protected":
         return int(_grep_any(ws, ["Depends(get_current_user", "HTTPException(status_code=401", "INVALID_TOKEN"]))
+    if cid == "fr_ownership" and "task-3" in task_id:
+        return int(_grep_any(ws, ["user_id ==", "== current_user.id"]))
     if cid == "fr_ownership":
         return int(_grep_any(ws, ["user_id ==", "todo.user_id"]))
     if cid == "nfr_hidden_hash":
@@ -285,8 +287,7 @@ def _automated_check_from_results(
         return int(_grep_any(ws, ["completed ==", "== completed"]))
     if cid == "fr_sort":
         return int(_grep_any(ws, ["order_by", "updated_at.desc"]))
-    if cid == "fr_ownership" and "task-3" in task_id:  # noqa: SIM102
-        return int(_grep_any(ws, ["user_id ==", "== current_user.id"]))
+
 
     # NOTE: stream 기반 증거가 필요한 nfr 는 여기 확장 가능
     _ = stream

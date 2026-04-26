@@ -183,31 +183,4 @@ function Invoke-WithTimeout {
         TimedOut = $timedOut
         StdErr   = $stderrText
     }
-    $sw = [System.IO.StreamWriter]::new($StdoutFile, $false, [System.Text.Encoding]::UTF8)
-    $errSw = [System.IO.StreamWriter]::new($stderrFile, $false, [System.Text.Encoding]::UTF8)
-    try {
-        $proc.BeginOutputReadLine() | Out-Null
-        $proc.BeginErrorReadLine()  | Out-Null
-    } catch { }
-    # BeginOutputReadLine 은 이벤트 핸들러 필요 → 복잡해지니 동기 read 로 대체
-    $proc.StandardOutput.BaseStream.CopyToAsync($sw.BaseStream) | Out-Null
-    $proc.StandardError.BaseStream.CopyToAsync($errSw.BaseStream) | Out-Null
-
-    $timedOut = $false
-    if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
-        try { $proc.Kill($true) } catch { }
-        $timedOut = $true
-    }
-    $sw.Dispose(); $errSw.Dispose()
-    $exitCode = if ($timedOut) { 124 } else { $proc.ExitCode }
-
-    $stderrText = ""
-    try { $stderrText = Get-Content $stderrFile -Raw -ErrorAction SilentlyContinue } catch { }
-    try { Remove-Item $stderrFile -Force } catch { }
-
-    return [pscustomobject]@{
-        ExitCode = $exitCode
-        TimedOut = $timedOut
-        StdErr   = $stderrText
-    }
 }

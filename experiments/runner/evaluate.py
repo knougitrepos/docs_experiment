@@ -46,7 +46,7 @@ def _parse_args() -> argparse.Namespace:
     ap.add_argument("--reasoning-effort", default="default",
                     help="reasoning/이성 수준 (default/minimal/low/medium/high/xhigh)")
     ap.add_argument("--agent", default="cursor",
-                    choices=["cursor", "codex", "aider", "copilot", "custom", "manual"],
+                    choices=["cursor", "codex", "aider", "copilot", "antigravity", "custom", "manual"],
                     help="agent adapter that produced the run")
     ap.add_argument("--rep", required=True, type=int, help="repetition index (1-based)")
     ap.add_argument("--repo-root", required=True, type=Path,
