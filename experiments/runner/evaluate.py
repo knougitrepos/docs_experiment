@@ -1,80 +1,78 @@
-"""evaluate.py — 단일 run 평가 진입점.
-
-runner 가 1 회 run 이 끝난 직후 호출. 입력으로 받은 run_dir 의 산출물을 토대로
-lib.metrics.evaluate_run 을 실행하고 metrics.json 을 생성한다.
-
-Usage:
-    python evaluate.py --run-dir <path> --ws <path> --task <id> --cond C0 \
-                       --model sonnet --reasoning-effort medium --agent cursor --rep 1 \
-                       --repo-root <repo>
-"""
+"""Evaluate one pilot experiment run and write metrics.json."""
 
 from __future__ import annotations
 
 import argparse
-import json
-import os
-import sys
 import traceback
 from pathlib import Path
 
-# sibling import
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
-
-from lib.logger import get_logger  # noqa: E402
-from lib.metrics import evaluate_run  # noqa: E402
+from lib.logger import get_logger
+from lib.metrics import evaluate_run, write_failure_metrics
 
 logger = get_logger(__name__)
 
 
 def _parse_args() -> argparse.Namespace:
-    ap = argparse.ArgumentParser(
+    parser = argparse.ArgumentParser(
         prog="evaluate.py",
-        description="Evaluate a single experiment run and produce metrics.json",
+        description="Evaluate one experiment run and always produce metrics.json.",
     )
-    ap.add_argument("--run-dir", required=True, type=Path,
-                    help="run output directory (contains stream.jsonl, pytest.json, ...)")
-    ap.add_argument("--ws", required=True, type=Path,
-                    help="target workspace path (contains generated app/ + tests/)")
-    ap.add_argument("--task", required=True,
-                    help="task id (e.g. task-1-todo-crud)")
-    ap.add_argument("--cond", required=True, choices=["C0", "C1", "C2", "C3", "C4"],
-                    help="condition")
-    ap.add_argument("--model", required=True, help="model name (adapter-specific)")
-    ap.add_argument("--reasoning-effort", default="default",
-                    help="reasoning/이성 수준 (default/minimal/low/medium/high/xhigh)")
-    ap.add_argument("--agent", default="cursor",
-                    choices=["cursor", "codex", "aider", "copilot", "antigravity", "custom", "manual"],
-                    help="agent adapter that produced the run")
-    ap.add_argument("--rep", required=True, type=int, help="repetition index (1-based)")
-    ap.add_argument("--repo-root", required=True, type=Path,
-                    help="repo root (for acceptance yaml / rubric lookup)")
-    ap.add_argument("--no-judge", action="store_true",
-                    help="skip LLM judge call (auto-only scoring)")
-    ap.add_argument("--judge-model", default=os.environ.get("JUDGE_MODEL", "sonnet"),
-                    help="judge model (default sonnet or $JUDGE_MODEL)")
-    return ap.parse_args()
+    parser.add_argument("--run-dir", required=True, type=Path)
+    parser.add_argument("--ws", required=True, type=Path)
+    parser.add_argument("--task", required=True)
+    parser.add_argument("--cond", required=True, choices=["C0", "C1", "C2", "C3", "C4"])
+    parser.add_argument("--model", required=True)
+    parser.add_argument("--reasoning-effort", default="default")
+    parser.add_argument(
+        "--agent",
+        default="codex",
+        choices=["cursor", "codex", "aider", "copilot", "antigravity", "custom", "manual"],
+    )
+    parser.add_argument("--rep", required=True, type=int)
+    parser.add_argument("--repo-root", required=True, type=Path)
+    parser.add_argument(
+        "--use-judge",
+        action="store_true",
+        help="Opt in to the legacy LLM judge. Disabled by default for pilot mode.",
+    )
+    parser.add_argument(
+        "--judge-model",
+        default="sonnet",
+        help="Legacy judge model name, only used with --use-judge.",
+    )
+    return parser.parse_args()
 
 
 def main() -> int:
     args = _parse_args()
+    args.run_dir.mkdir(parents=True, exist_ok=True)
     logger.info(
-        "evaluate start: run=%s agent=%s model=%s reasoning=%s cond=%s rep=%d task=%s",
-        args.run_dir, args.agent, args.model, args.reasoning_effort,
-        args.cond, args.rep, args.task,
+        "evaluate start: run=%s agent=%s model=%s cond=%s rep=%d task=%s judge=%s",
+        args.run_dir,
+        args.agent,
+        args.model,
+        args.cond,
+        args.rep,
+        args.task,
+        args.use_judge,
     )
 
-    if not args.run_dir.exists():
-        logger.error("run-dir does not exist: %s", args.run_dir)
-        return 2
     if not args.ws.exists():
+        write_failure_metrics(
+            run_dir=args.run_dir,
+            task_id=args.task,
+            condition=args.cond,
+            model=args.model,
+            reasoning_effort=args.reasoning_effort,
+            rep=args.rep,
+            agent=args.agent,
+            errors=[f"workspace does not exist: {args.ws}"],
+        )
         logger.error("workspace does not exist: %s", args.ws)
-        return 2
+        return 1
 
     try:
-        res = evaluate_run(
+        result = evaluate_run(
             run_dir=args.run_dir,
             workspace=args.ws,
             task_id=args.task,
@@ -84,42 +82,31 @@ def main() -> int:
             rep=args.rep,
             repo_root=args.repo_root,
             agent=args.agent,
-            use_judge=not args.no_judge,
+            use_judge=args.use_judge,
             judge_model=args.judge_model,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.exception("evaluate_run crashed: %s", exc)
-        # 최소한의 실패 스텁을 남긴다(집계가 깨지지 않도록)
-        fallback = {
-            "agent": args.agent,
-            "task_id": args.task,
-            "condition": args.cond,
-            "model": args.model,
-            "reasoning_effort": args.reasoning_effort,
-            "rep": args.rep,
-            "requirements_fulfillment": 0.0,
-            "test_pass_rate": 0.0,
-            "build_success": False,
-            "design_alignment": 0.0,
-            "static_errors_total": 0,
-            "reprompt_count": 0,
-            "manual_fix_proxy": 0,
-            "wall_seconds": 0.0,
-            "agent_steps": 0,
-            "total_tokens": 0,
-            "errors": [f"evaluate crash: {exc}"],
-            "traceback": traceback.format_exc(),
-        }
-        (args.run_dir / "metrics.json").write_text(
-            json.dumps(fallback, ensure_ascii=False, indent=2),
-            encoding="utf-8",
+        write_failure_metrics(
+            run_dir=args.run_dir,
+            task_id=args.task,
+            condition=args.cond,
+            model=args.model,
+            reasoning_effort=args.reasoning_effort,
+            rep=args.rep,
+            agent=args.agent,
+            errors=[f"evaluate crashed: {exc}", traceback.format_exc()],
         )
+        logger.exception("evaluate crashed: %s", exc)
         return 1
 
     logger.info(
-        "evaluate done: req=%.2f tests=%.2f design=%.2f static=%d",
-        res.requirements_fulfillment, res.test_pass_rate,
-        res.design_alignment, res.static_errors_total,
+        "evaluate done: build=%s tests=%d/%d requirements=%d/%d elapsed=%.2f",
+        result.build_success,
+        result.test_pass_count,
+        result.test_total_count,
+        result.requirements_satisfied_count,
+        result.requirements_total_count,
+        result.elapsed_seconds,
     )
     return 0
 

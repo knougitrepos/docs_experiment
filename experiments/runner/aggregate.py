@@ -1,298 +1,49 @@
-"""aggregate.py — 여러 run 의 metrics.json 을 summary.csv 와 report.md 로 집계.
-
-디렉터리 구조 (run_experiment.ps1 산출):
-    results/<run_id>/<agent>/<model>/<cond>/rep<N>/<task>/metrics.json
-
-Usage:
-    python aggregate.py --run-root results/20260421_140000
-    python aggregate.py --run-root results/20260421_140000 --scope cursor/sonnet
-"""
+"""Aggregate pilot metrics.json files into summary.csv and report.md."""
 
 from __future__ import annotations
 
 import argparse
+import csv
 import json
-import sys
+from collections import defaultdict
 from pathlib import Path
+from statistics import mean
 from typing import Any
 
-import pandas as pd  # type: ignore[import-untyped]
-
-SCRIPT_DIR = Path(__file__).resolve().parent
-if str(SCRIPT_DIR) not in sys.path:
-    sys.path.insert(0, str(SCRIPT_DIR))
-
-from lib.logger import get_logger  # noqa: E402
+from lib.logger import get_logger
 
 logger = get_logger(__name__)
 
-
-# ------------------------------------------------------------
-# 1) metrics.json 수집
-# ------------------------------------------------------------
-METRIC_FIELDS = [
-    "agent", "task_id", "condition", "model", "reasoning_effort", "rep",
-    "requirements_fulfillment",
-    "test_pass_rate",
+PILOT_CONDITIONS = ["C0", "C1", "C3"]
+SUMMARY_FIELDS = [
+    "agent",
+    "model",
+    "reasoning_effort",
+    "condition",
+    "task_id",
+    "rep",
     "build_success",
-    "design_alignment",
-    "static_errors_total",
-    "reprompt_count",
-    "manual_fix_proxy",
-    "wall_seconds",
-    "agent_steps",
-    "total_tokens",
-    "total_cost_usd",
-    "coverage_percent",
-    "pytest_passed",
-    "pytest_failed",
-    "pytest_total",
-    "judge_success",
-    "input_docs_bytes",
-]
-
-
-def _scan_metrics(run_root: Path, scope: str | None) -> list[dict[str, Any]]:
-    """run_root 하위에서 metrics.json 을 모두 수집.
-
-    scope: "<agent>" 또는 "<agent>/<model>" prefix 로 제한.
-    """
-    rows: list[dict[str, Any]] = []
-    base = run_root
-    if scope:
-        base = run_root / scope
-    if not base.exists():
-        logger.warning("scope root not found: %s", base)
-        return rows
-
-    for p in base.rglob("metrics.json"):
-        try:
-            data = json.loads(p.read_text(encoding="utf-8-sig"))
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("skip unreadable %s: %s", p, exc)
-            continue
-        # 필드 flatten
-        row = {k: data.get(k) for k in METRIC_FIELDS}
-        if not row.get("reasoning_effort"):
-            row["reasoning_effort"] = "default"
-        # static_errors breakdown 추가
-        brk = data.get("static_errors_breakdown") or {}
-        row["ruff_errors"] = brk.get("ruff", 0)
-        row["mypy_errors"] = brk.get("mypy", 0)
-        row["_metrics_path"] = str(p)
-        rows.append(row)
-    logger.info("collected %d metrics.json under %s", len(rows), base)
-    return rows
-
-
-# ------------------------------------------------------------
-# 2) summary.csv / report.md 작성
-# ------------------------------------------------------------
-_GROUP_KEYS = ["agent", "model", "reasoning_effort", "condition", "task_id"]
-_NUMERIC = [
-    "requirements_fulfillment",
-    "test_pass_rate",
-    "design_alignment",
-    "static_errors_total",
+    "test_pass_count",
+    "test_total_count",
+    "requirements_satisfied_count",
+    "requirements_total_count",
+    "elapsed_seconds",
+    "static_analysis_errors_count",
     "ruff_errors",
-    "mypy_errors",
-    "reprompt_count",
-    "manual_fix_proxy",
-    "wall_seconds",
-    "agent_steps",
-    "total_tokens",
-    "coverage_percent",
-    "input_docs_bytes",
+    "run_status",
+    "metrics_path",
 ]
-_BOOLEAN = ["build_success", "judge_success"]
 
 
-def _write_summary_csv(rows: list[dict[str, Any]], out: Path) -> pd.DataFrame:
-    df = pd.DataFrame(rows)
-    if df.empty:
-        logger.warning("no rows; summary.csv will be empty header only")
-        df = pd.DataFrame(columns=METRIC_FIELDS)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(out, index=False, encoding="utf-8-sig")
-    logger.info("wrote %s (%d rows)", out, len(df))
-    return df
-
-
-def _aggregate_table(df: pd.DataFrame) -> pd.DataFrame:
-    if df.empty:
-        return df
-    grouped = df.groupby(_GROUP_KEYS, dropna=False)
-
-    agg_spec: dict[str, Any] = {}
-    for c in _NUMERIC:
-        if c in df.columns:
-            agg_spec[c] = ["mean", "std", "count"]
-    for c in _BOOLEAN:
-        if c in df.columns:
-            agg_spec[c] = [lambda s: float((s == True).sum()) / max(len(s), 1)]  # noqa: E712
-
-    agg = grouped.agg(agg_spec)
-    # flatten column multiindex
-    agg.columns = [
-        f"{col}_{stat}" if not callable(stat) else f"{col}_rate"
-        for col, stat in agg.columns
-    ]
-    agg = agg.reset_index()
-    return agg
-
-
-def _render_report(run_root: Path, df: pd.DataFrame, out: Path, scope: str | None) -> None:
-    lines: list[str] = []
-    lines.append(f"# Experiment Aggregate Report — {run_root.name}")
-    lines.append("")
-    if scope:
-        lines.append(f"**Scope**: `{scope}`")
-    lines.append(f"**Total runs collected**: {len(df)}")
-    lines.append("")
-
-    if df.empty:
-        lines.append("_No runs found. Make sure metrics.json files exist._")
-        out.write_text("\n".join(lines), encoding="utf-8")
-        return
-
-    # 2.1 agent / model 리스트
-    agents = sorted(df["agent"].dropna().unique().tolist())
-    models = sorted(df["model"].dropna().unique().tolist())
-    reasonings = sorted(df["reasoning_effort"].dropna().unique().tolist()) if "reasoning_effort" in df.columns else []
-    conds  = sorted(df["condition"].dropna().unique().tolist())
-    tasks  = sorted(df["task_id"].dropna().unique().tolist())
-    lines.append(f"- agents   : {', '.join(agents) or '-'}")
-    lines.append(f"- models   : {', '.join(models) or '-'}")
-    lines.append(f"- reasoning: {', '.join(reasonings) or '-'}")
-    lines.append(f"- conditions: {', '.join(conds) or '-'}")
-    lines.append(f"- tasks    : {', '.join(tasks) or '-'}")
-    lines.append("")
-
-    # 2.2 조건별 평균 (agent/model 고정 관점)
-    lines.append("## 1. 조건(Cx) × task 평균 — 핵심 지표")
-    lines.append("")
-    key_cols = ["agent", "model", "reasoning_effort", "condition", "task_id"]
-    value_cols = [
-        "requirements_fulfillment",
-        "test_pass_rate",
-        "design_alignment",
-        "static_errors_total",
-        "reprompt_count",
-        "wall_seconds",
-        "total_tokens",
-    ]
-    value_cols = [c for c in value_cols if c in df.columns]
-    if value_cols:
-        pivot = (
-            df.groupby(key_cols)[value_cols]
-            .agg(["mean", "std"])
-            .round(3)
-        )
-        lines.append(_df_to_md(pivot.reset_index()))
-        lines.append("")
-
-    # 2.3 조건 heatmap (mean of requirements_fulfillment)
-    lines.append("## 2. 요구사항 충족률 히트맵 (agent/model/reasoning × condition, task 평균)")
-    lines.append("")
-    if {"requirements_fulfillment"}.issubset(df.columns):
-        heat = (
-            df.groupby(["agent", "model", "reasoning_effort", "condition"])["requirements_fulfillment"]
-            .mean()
-            .unstack("condition")
-            .round(3)
-        )
-        lines.append(_df_to_md(heat.reset_index()))
-        lines.append("")
-
-    # 2.4 H1 (계층화 효과) 간이 검증: C2 vs C3 mean(req)
-    lines.append("## 3. 가설 간이 검증")
-    lines.append("")
-    mean_by_cond = df.groupby("condition")[value_cols].mean().round(3)
-    lines.append("### H1: 계층화/분할이 요구사항 충족률을 높이는가?")
-    if "requirements_fulfillment" in mean_by_cond.columns:
-        v = mean_by_cond["requirements_fulfillment"].to_dict()
-        lines.append("")
-        for c in ["C0", "C1", "C2", "C3", "C4"]:
-            if c in v:
-                lines.append(f"- {c}: {v[c]:.3f}")
-        lines.append("")
-
-    lines.append("### H2: 문서가 늘수록 재프롬프트 ↓, agent_steps ↑ 경향?")
-    if {"reprompt_count", "agent_steps"}.issubset(df.columns):
-        v = df.groupby("condition")[["reprompt_count", "agent_steps"]].mean().round(3)
-        lines.append("")
-        lines.append(_df_to_md(v.reset_index()))
-        lines.append("")
-
-    lines.append("### H3: C4 의 task-2/3 에서 재교정 감소 여부 (C3 대비)")
-    if "condition" in df.columns and "task_id" in df.columns:
-        sub = df[df["condition"].isin(["C3", "C4"])]
-        if not sub.empty and "manual_fix_proxy" in sub.columns:
-            v = (
-                sub.groupby(["condition", "task_id"])["manual_fix_proxy"]
-                .mean()
-                .round(3)
-                .reset_index()
-            )
-            lines.append("")
-            lines.append(_df_to_md(v))
-            lines.append("")
-
-    # 2.5 운영 통계
-    lines.append("## 4. 운영 통계 (비용/시간)")
-    lines.append("")
-    ops_cols = [c for c in ["wall_seconds", "total_tokens", "total_cost_usd", "input_docs_bytes"]
-                if c in df.columns]
-    if ops_cols:
-        v = df.groupby(["agent", "model", "reasoning_effort"])[ops_cols].sum().round(3).reset_index()
-        v["hours"] = (v["wall_seconds"] / 3600).round(2) if "wall_seconds" in v.columns else 0
-        lines.append(_df_to_md(v))
-        lines.append("")
-
-    # 2.6 원시 데이터 포인터
-    lines.append("## 5. 원시 데이터")
-    lines.append("")
-    lines.append(f"- summary.csv 위치: `{out.parent / 'summary.csv'}`")
-    lines.append(f"- run_root: `{run_root}`")
-    lines.append("- 개별 run 디렉터리에 `metrics.json`, `stream.jsonl`, `pytest.log` 등이 있습니다.")
-    lines.append("")
-
-    out.write_text("\n".join(lines), encoding="utf-8")
-    logger.info("wrote %s", out)
-
-
-def _df_to_md(df: pd.DataFrame) -> str:
-    """pandas DataFrame 을 GFM 마크다운 표로 변환."""
-    if df.empty:
-        return "_(empty)_"
-    try:
-        return df.to_markdown(index=False)
-    except Exception:
-        # tabulate 없을 때 fallback
-        cols = list(df.columns)
-        lines = ["| " + " | ".join(map(str, cols)) + " |",
-                 "| " + " | ".join(["---"] * len(cols)) + " |"]
-        for _, row in df.iterrows():
-            lines.append("| " + " | ".join(str(row[c]) for c in cols) + " |")
-        return "\n".join(lines)
-
-
-# ------------------------------------------------------------
-# 3) CLI
-# ------------------------------------------------------------
 def _parse_args() -> argparse.Namespace:
-    ap = argparse.ArgumentParser(
+    parser = argparse.ArgumentParser(
         prog="aggregate.py",
-        description="Aggregate metrics.json files under a run_root into summary.csv + report.md",
+        description="Collect metrics.json under a result root and write summary.csv + report.md.",
     )
-    ap.add_argument("--run-root", required=True, type=Path,
-                    help="run output root (e.g. experiments/results/20260421_140000)")
-    ap.add_argument("--scope", default=None,
-                    help="optional prefix to limit scan (e.g. cursor/sonnet)")
-    ap.add_argument("--out-dir", type=Path, default=None,
-                    help="output directory for summary.csv + report.md. "
-                         "default: <run-root>[/<scope>]")
-    return ap.parse_args()
+    parser.add_argument("--run-root", required=True, type=Path)
+    parser.add_argument("--scope", default=None, help="Optional prefix such as codex/gpt-5.4-mini")
+    parser.add_argument("--out-dir", type=Path, default=None)
+    return parser.parse_args()
 
 
 def main() -> int:
@@ -300,23 +51,239 @@ def main() -> int:
     if not args.run_root.exists():
         logger.error("run-root not found: %s", args.run_root)
         return 2
+
     out_dir = args.out_dir
     if out_dir is None:
-        out_dir = args.run_root if not args.scope else (args.run_root / args.scope)
+        out_dir = args.run_root if not args.scope else args.run_root / args.scope
     out_dir.mkdir(parents=True, exist_ok=True)
 
     rows = _scan_metrics(args.run_root, args.scope)
-    df = _write_summary_csv(rows, out_dir / "summary.csv")
-    _render_report(args.run_root, df, out_dir / "report.md", args.scope)
+    _write_summary_csv(rows, out_dir / "summary.csv")
+    _write_report(args.run_root, out_dir / "report.md", rows, args.scope)
 
-    # cross-scope 집계 (run_root 하위 전부)
     if args.scope:
-        logger.info("also writing cross-scope aggregate under run_root")
         all_rows = _scan_metrics(args.run_root, None)
-        all_df = _write_summary_csv(all_rows, args.run_root / "summary.csv")
-        _render_report(args.run_root, all_df, args.run_root / "report.md", scope=None)
-
+        _write_summary_csv(all_rows, args.run_root / "summary.csv")
+        _write_report(args.run_root, args.run_root / "report.md", all_rows, None)
     return 0
+
+
+def _scan_metrics(run_root: Path, scope: str | None) -> list[dict[str, Any]]:
+    base = run_root / scope if scope else run_root
+    if not base.exists():
+        logger.warning("scope root not found: %s", base)
+        return []
+
+    rows: list[dict[str, Any]] = []
+    for path in base.rglob("metrics.json"):
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8-sig"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("skip unreadable metrics %s: %s", path, exc)
+            continue
+        if isinstance(raw, dict):
+            rows.append(_normalize_row(raw, path))
+    rows.sort(key=_sort_key)
+    logger.info("collected %d metrics.json under %s", len(rows), base)
+    return rows
+
+
+def _normalize_row(data: dict[str, Any], path: Path) -> dict[str, Any]:
+    test_pass_count = data.get("test_pass_count", data.get("pytest_passed", 0))
+    test_total_count = data.get("test_total_count", data.get("pytest_total", 0))
+    elapsed_seconds = data.get("elapsed_seconds", data.get("wall_seconds", 0.0))
+    static_errors = data.get("static_analysis_errors_count", data.get("static_errors_total", 0))
+    ruff_errors = data.get("ruff_errors")
+    if ruff_errors is None:
+        breakdown = data.get("static_errors_breakdown")
+        ruff_errors = breakdown.get("ruff", 0) if isinstance(breakdown, dict) else 0
+    requirements_total = data.get("requirements_total_count", 0)
+    requirements_satisfied = data.get("requirements_satisfied_count")
+    if requirements_satisfied is None:
+        requirements_satisfied = data.get("requirements_fulfillment", 0)
+
+    row = {
+        "agent": data.get("agent", ""),
+        "model": data.get("model", ""),
+        "reasoning_effort": data.get("reasoning_effort") or "default",
+        "condition": data.get("condition", ""),
+        "task_id": data.get("task_id", ""),
+        "rep": data.get("rep", ""),
+        "build_success": bool(data.get("build_success", False)),
+        "test_pass_count": _to_number(test_pass_count),
+        "test_total_count": _to_number(test_total_count),
+        "requirements_satisfied_count": _to_number(requirements_satisfied),
+        "requirements_total_count": _to_number(requirements_total),
+        "elapsed_seconds": _to_number(elapsed_seconds),
+        "static_analysis_errors_count": _to_number(static_errors),
+        "ruff_errors": _to_number(ruff_errors),
+        "run_status": data.get("run_status") or "completed",
+        "metrics_path": str(path),
+    }
+    return row
+
+
+def _sort_key(row: dict[str, Any]) -> tuple[Any, ...]:
+    condition = str(row.get("condition", ""))
+    condition_idx = {"C0": 0, "C1": 1, "C2": 2, "C3": 3, "C4": 4}.get(condition, 99)
+    return (
+        str(row.get("agent", "")),
+        str(row.get("model", "")),
+        str(row.get("reasoning_effort", "")),
+        condition_idx,
+        str(row.get("task_id", "")),
+        str(row.get("rep", "")),
+    )
+
+
+def _to_number(value: Any) -> float | int:
+    if value is None or value == "":
+        return 0
+    if isinstance(value, bool):
+        return int(value)
+    if isinstance(value, (int, float)):
+        return value
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0
+    return int(number) if number.is_integer() else number
+
+
+def _write_summary_csv(rows: list[dict[str, Any]], path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("w", encoding="utf-8-sig", newline="") as handle:
+        writer = csv.DictWriter(handle, fieldnames=SUMMARY_FIELDS)
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({field: row.get(field, "") for field in SUMMARY_FIELDS})
+    logger.info("wrote %s (%d rows)", path, len(rows))
+
+
+def _write_report(
+    run_root: Path,
+    path: Path,
+    rows: list[dict[str, Any]],
+    scope: str | None,
+) -> None:
+    lines = [
+        f"# Research 2 Pilot Report - {run_root.name}",
+        "",
+        "Default pilot scope: C0, C1, C3 / task-1-todo-crud / no LLM judge.",
+        "",
+    ]
+    if scope:
+        lines.extend([f"Scope: `{scope}`", ""])
+    lines.extend([f"Total metrics collected: {len(rows)}", ""])
+
+    lines.extend(
+        [
+            "## Research 2 Pilot Condition Comparison",
+            "",
+            _condition_table(rows),
+            "",
+            "## Run Details",
+            "",
+            _run_table(rows),
+            "",
+            "## Files",
+            "",
+            f"- summary.csv: `{path.parent / 'summary.csv'}`",
+            f"- report.md: `{path}`",
+            f"- run_root: `{run_root}`",
+            "",
+        ]
+    )
+    path.write_text("\n".join(lines), encoding="utf-8")
+    logger.info("wrote %s", path)
+
+
+def _condition_table(rows: list[dict[str, Any]]) -> str:
+    grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+    for row in rows:
+        if row.get("condition") in PILOT_CONDITIONS:
+            grouped[str(row["condition"])].append(row)
+
+    table_rows: list[list[str]] = []
+    for condition in PILOT_CONDITIONS:
+        condition_rows = grouped.get(condition, [])
+        if not condition_rows:
+            table_rows.append([condition, "0", "-", "-", "-", "-", "-", "-"])
+            continue
+        table_rows.append(
+            [
+                condition,
+                str(len(condition_rows)),
+                _fmt(sum(1 for row in condition_rows if row["build_success"]) / len(condition_rows)),
+                _fmt(mean(float(row["test_pass_count"]) for row in condition_rows)),
+                _fmt(mean(float(row["test_total_count"]) for row in condition_rows)),
+                _fmt(mean(float(row["requirements_satisfied_count"]) for row in condition_rows)),
+                _fmt(mean(float(row["requirements_total_count"]) for row in condition_rows)),
+                _fmt(mean(float(row["elapsed_seconds"]) for row in condition_rows)),
+            ]
+        )
+    return _markdown_table(
+        [
+            "condition",
+            "runs",
+            "build_success_rate",
+            "avg_test_pass",
+            "avg_test_total",
+            "avg_req_satisfied",
+            "avg_req_total",
+            "avg_elapsed_sec",
+        ],
+        table_rows,
+    )
+
+
+def _run_table(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return "_No metrics.json files found._"
+    table_rows = [
+        [
+            str(row["condition"]),
+            str(row["agent"]),
+            str(row["model"]),
+            str(row["task_id"]),
+            str(row["rep"]),
+            str(row["build_success"]),
+            f"{row['test_pass_count']}/{row['test_total_count']}",
+            f"{row['requirements_satisfied_count']}/{row['requirements_total_count']}",
+            _fmt(float(row["elapsed_seconds"])),
+            str(row["run_status"]),
+        ]
+        for row in rows
+    ]
+    return _markdown_table(
+        [
+            "condition",
+            "agent",
+            "model",
+            "task",
+            "rep",
+            "build",
+            "tests",
+            "requirements",
+            "elapsed",
+            "status",
+        ],
+        table_rows,
+    )
+
+
+def _markdown_table(headers: list[str], rows: list[list[str]]) -> str:
+    lines = [
+        "| " + " | ".join(headers) + " |",
+        "| " + " | ".join(["---"] * len(headers)) + " |",
+    ]
+    for row in rows:
+        lines.append("| " + " | ".join(row) + " |")
+    return "\n".join(lines)
+
+
+def _fmt(value: float) -> str:
+    return f"{value:.2f}"
 
 
 if __name__ == "__main__":
